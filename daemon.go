@@ -32,7 +32,7 @@ func fakeRedisRead()  {// 模拟一个redis读取所用的时间
 
 func fakeRedisWrite()  { // 模拟一个redis写入所用的时间
 	rand.Seed(time.Now().UnixNano())
-	randInt := rand.Intn(30)
+	randInt := rand.Intn(50)
 	time.Sleep( time.Duration(randInt) * time.Millisecond)
 }
 
@@ -73,21 +73,21 @@ func worker2(ch chan string)  { // 启动一个处理协程
 //	}
 //}
 
-func wait(wg sync.WaitGroup, pool chan struct{}, abort chan struct{}) (endLoopNum int,stopEnd bool){
-	loopNum := 1000
+func wait(wg *sync.WaitGroup, pool *chan struct{}, abort chan struct{}) (endLoopNum int,stopEnd bool){
+	loopNum := 100000
 	for i := 0; i<loopNum ; i++  {
-		tick := time.Tick(5 * time.Millisecond)
-		wg.Add(1)
+		tick := time.Tick(1 * time.Millisecond)
 		select {
 		case <-tick: // 等待1ms
 			if i%10 == 0 {LogL("tick")}
 			if i%50 == 0 {
-				printCurrentNumGo(len(pool))
+				printCurrentNumGo(len(*pool))
 			}
 			go func() {
-				pool <- struct{}{}// 锁定池中一个资源
+				wg.Add(1)
+				*pool <- struct{}{}// 锁定池中一个资源
 				defer func() {
-					<-pool // 确保释放池中一个资源
+					<-*pool // 确保释放池中一个资源
 				}()
 				//Worker() // 带超时方案
 				worker() // 无超时方案
@@ -106,21 +106,27 @@ func startDaemon()  { // 开启主进程
 	pool := make(chan struct{}, maxRouNum) // 锁定池，限制最大启动协程数
 
 	abort := make(chan struct{})
-	sig := -1000
-	go func() {
-		sig,_ = os.Stdin.Read(make([]byte, 1)) // 从屏幕输入读取一个信号
+	sig := -1000 // 系统信号
+	forceKill := false // 是否强制退出，TODO: 根据系统信号判断是重启还是强退
+
+	go func() { // 单独协程从屏幕输入读取一个信号
+		sig,_ = os.Stdin.Read(make([]byte, 1))
 		abort <- struct{}{}
 	}()
 
 
-	var wg sync.WaitGroup
-	endLoopNum, stop :=wait(wg, pool, abort)
+	var wg sync.WaitGroup // 等待所有协程退出
+	endLoopNum, stop :=wait(&wg, &pool, abort)
 
 	if stop {
 		LogL("stop loop at loop num:" + strconv.Itoa(endLoopNum))
 		LogL("abort signle:" + strconv.Itoa(sig))
 	} else{
 		LogL("loop end")
+	}
+	if forceKill {
+		LogL("force kill")
+		os.Exit(1)
 	}
 	LogL("current goroutin number:"+ strconv.Itoa((runtime.NumGoroutine()))+ ",length of pool:"+ strconv.Itoa(len(pool)))
 	LogL("wait for all goroutin end")
@@ -129,12 +135,12 @@ func startDaemon()  { // 开启主进程
 	LogL("Daemon end")
 }
 
-func printCurrentNumGo(poolNum int)  {
+func printCurrentNumGo(poolNum int)  { // 打印当前协程数和协程pool实际长度
 	gNum := strconv.Itoa((runtime.NumGoroutine()))
 	LogL("current goroutin number:"+ gNum+ ",length of pool:"+ strconv.Itoa(poolNum))
 }
 
-func LogL(s string)  {
+func LogL(s string)  { // 记录日志，同时打印到屏幕
 	debugLog.Println(s)
 	fmt.Println(s)
 }
@@ -189,4 +195,5 @@ func main()  {
 	debugLog.Println("main process start, pid:", pid)
 
 	startDaemon()
+
 }
