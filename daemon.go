@@ -46,12 +46,7 @@ func getData()  { // 获取数据
 	fakeRedisRead()
 }
 
-func worker(pool chan struct{})  { // 启动一个处理协程
-	pool <- struct{}{}// 锁定池中一个资源
-	defer func() {
-		debugLog.Println("goroutine "+GetGID()+": release pool" )
-		<-pool // 确保释放池中一个资源
-	}()
+func worker()  { // 启动一个处理协程
 	debugLog.Println("goroutine "+GetGID()+": start worker" )
 	getData()
 	doQuery()
@@ -59,12 +54,7 @@ func worker(pool chan struct{})  { // 启动一个处理协程
 }
 
 
-func worker2(pool chan struct{}, ch chan string)  { // 启动一个处理协程
-	pool <- struct{}{}// 锁定池中一个资源
-	defer func() {
-		debugLog.Println("goroutine "+GetGID()+": release pool" )
-		<-pool // 确保释放池中一个资源
-	}()
+func worker2(ch chan string)  { // 启动一个处理协程
 	debugLog.Println("goroutine "+GetGID()+": start worker2" )
 	getData()
 	doQuery()
@@ -83,31 +73,70 @@ func worker2(pool chan struct{}, ch chan string)  { // 启动一个处理协程
 //	}
 //}
 
-func startDaemon()  { // 开启主进程
-	pool := make(chan struct{}, maxRouNum) // 锁定池，保证最大启动协程数
-	run := true // 是否继续运行，从外部接收命令
-	var wg sync.WaitGroup
-	for i := 0; i<100 ; i++  { //测试时最大循环100次
+func wait(wg sync.WaitGroup, pool chan struct{}, abort chan struct{}) (endLoopNum int,stopEnd bool){
+	loopNum := 1000
+	for i := 0; i<loopNum ; i++  {
+		tick := time.Tick(5 * time.Millisecond)
 		wg.Add(1)
-		go func() {
-			//Worker(pool) // 带超时方案
-			worker(pool) // 无超时方案
-			wg.Done()
-		}()
+		select {
+		case <-tick: // 等待1ms
+			if i%10 == 0 {LogL("tick")}
+			if i%50 == 0 {
+				printCurrentNumGo(len(pool))
+			}
+			go func() {
+				pool <- struct{}{}// 锁定池中一个资源
+				defer func() {
+					<-pool // 确保释放池中一个资源
+				}()
+				//Worker() // 带超时方案
+				worker() // 无超时方案
+				wg.Done()
+			}()
 
-		gNum := strconv.Itoa((runtime.NumGoroutine()))
-		debugLog.Println("current goroutin number:", gNum, ",length of pool:", strconv.Itoa(len(pool)))
-		fmt.Println("current goroutin number:", gNum, ",length of pool:", strconv.Itoa(len(pool)))
-		time.Sleep( time.Duration(1) * time.Millisecond) // 如果没有sleep，主程序结束太快了，然后所有协程也都一起结束了
-		if !run {
-			break
+		case <- abort:
+			LogL("get abort signle")
+			return i,true //中断返回
 		}
 	}
-	debugLog.Println("loop end")
-	debugLog.Println("current goroutin number:", strconv.Itoa((runtime.NumGoroutine())), ",length of pool:", strconv.Itoa(len(pool)))
+	return loopNum, false // 循环结束返回
+}
+
+func startDaemon()  { // 开启主进程
+	pool := make(chan struct{}, maxRouNum) // 锁定池，限制最大启动协程数
+
+	abort := make(chan struct{})
+	sig := -1000
+	go func() {
+		sig,_ = os.Stdin.Read(make([]byte, 1)) // 从屏幕输入读取一个信号
+		abort <- struct{}{}
+	}()
+
+
+	var wg sync.WaitGroup
+	endLoopNum, stop :=wait(wg, pool, abort)
+
+	if stop {
+		LogL("stop loop at loop num:" + strconv.Itoa(endLoopNum))
+		LogL("abort signle:" + strconv.Itoa(sig))
+	} else{
+		LogL("loop end")
+	}
+	LogL("current goroutin number:"+ strconv.Itoa((runtime.NumGoroutine()))+ ",length of pool:"+ strconv.Itoa(len(pool)))
+	LogL("wait for all goroutin end")
 	wg.Wait() // 等待所有启动但还未完成的协程执行完毕
-	debugLog.Println("current goroutin number:", strconv.Itoa((runtime.NumGoroutine())), ",length of pool:", strconv.Itoa(len(pool)))
-	debugLog.Println("Daemon end")
+	LogL("current goroutin number:"+ strconv.Itoa((runtime.NumGoroutine()))+ ",length of pool:"+ strconv.Itoa(len(pool)))
+	LogL("Daemon end")
+}
+
+func printCurrentNumGo(poolNum int)  {
+	gNum := strconv.Itoa((runtime.NumGoroutine()))
+	LogL("current goroutin number:"+ gNum+ ",length of pool:"+ strconv.Itoa(poolNum))
+}
+
+func LogL(s string)  {
+	debugLog.Println(s)
+	fmt.Println(s)
 }
 
 // In order to keep the working directory the same as when we started we record
